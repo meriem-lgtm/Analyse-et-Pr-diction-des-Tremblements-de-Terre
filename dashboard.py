@@ -1,50 +1,184 @@
 """
-Dashboard Streamlit — Analyse & Prédiction des Séismes
-Lancer : streamlit run dashboard.py
+Dashboard de Prédiction Sismique — Édition Professionnelle
+=============================================================
+Lancer : streamlit run dashboard_prediction.py
+
+Ce dashboard se concentre exclusivement sur la prédiction interactive :
+- Saisie des paramètres d'un événement sismique potentiel
+- Prédiction de la classe de magnitude (Faible / Moyen / Fort)
+- Estimation précise de la magnitude (régression)
+- Visualisation des probabilités, de la confiance du modèle et de la localisation
 """
 
 import os, warnings
 warnings.filterwarnings('ignore')
-from sklearn.utils.class_weight import compute_sample_weight
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import joblib
+from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.metrics import (
-    accuracy_score, f1_score, precision_score, recall_score,
-    confusion_matrix, mean_absolute_error, r2_score
-)
-import xgboost as xgb
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import lightgbm as lgb
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
 
-# ── Config page ──────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# CONFIGURATION DE LA PAGE
+# ════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="🌍 Earthquake ML Dashboard",
-    page_icon="🌍",
+    page_title="Prédiction Sismique | Seismic AI",
+    page_icon="🌐",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ── CSS ───────────────────────────────────────────────────────────────────────
+RANDOM_STATE = 42
+
+# ════════════════════════════════════════════════════════════════════════════
+# STYLE — DESIGN PROFESSIONNEL
+# ════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
-  [data-testid="stMetricValue"] { font-size: 2rem; font-weight: 700; }
-  .block-container { padding-top: 1.5rem; }
-  h1 { color: #e63946; }
-  h2 { color: #457b9d; border-bottom: 2px solid #457b9d; padding-bottom: .3rem; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap');
+
+    html, body, [class*="css"]  { font-family: 'Inter', sans-serif; }
+
+    :root {
+        --bg-primary:   #0b0f19;
+        --bg-secondary: #131a2a;
+        --bg-card:      #161e30;
+        --border-col:   #232c42;
+        --accent:       #3b82f6;
+        --accent-2:     #06b6d4;
+        --danger:       #ef4444;
+        --warning:      #f59e0b;
+        --success:      #10b981;
+        --text-main:    #e5e9f0;
+        --text-dim:     #8b97ad;
+    }
+
+    .stApp { background: radial-gradient(circle at 15% 0%, #101729 0%, #0b0f19 55%); }
+
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0d1320 0%, #0b0f19 100%);
+        border-right: 1px solid var(--border-col);
+    }
+
+    /* Header bandeau */
+    .hero {
+        background: linear-gradient(120deg, #0f1b33 0%, #15233f 60%, #0f1b33 100%);
+        border: 1px solid var(--border-col);
+        border-radius: 18px;
+        padding: 2.1rem 2.4rem;
+        margin-bottom: 1.6rem;
+        position: relative;
+        overflow: hidden;
+    }
+    .hero::after {
+        content: "";
+        position: absolute; top: -40%; right: -10%;
+        width: 320px; height: 320px;
+        background: radial-gradient(circle, rgba(59,130,246,0.18) 0%, transparent 70%);
+    }
+    .hero-eyebrow {
+        color: var(--accent-2);
+        font-size: .78rem;
+        font-weight: 700;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+        margin-bottom: .5rem;
+    }
+    .hero-title {
+        font-size: 2.1rem;
+        font-weight: 800;
+        color: #f4f6fb;
+        margin: 0 0 .35rem 0;
+        letter-spacing: -.02em;
+    }
+    .hero-sub { color: var(--text-dim); font-size: .98rem; margin: 0; }
+
+    /* Cartes section */
+    .panel {
+        background: var(--bg-card);
+        border: 1px solid var(--border-col);
+        border-radius: 16px;
+        padding: 1.5rem 1.7rem;
+        margin-bottom: 1.2rem;
+    }
+    .panel-title {
+        font-size: .92rem;
+        font-weight: 700;
+        color: var(--text-main);
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        margin-bottom: 1.1rem;
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+    }
+    .panel-title .bar { width: 4px; height: 16px; background: var(--accent); border-radius: 4px; display:inline-block; }
+
+    /* Résultat */
+    .result-card {
+        border-radius: 18px;
+        padding: 2rem 2.2rem;
+        border: 1px solid var(--border-col);
+        margin-bottom: 1.2rem;
+        position: relative;
+        overflow: hidden;
+    }
+    .result-faible { background: linear-gradient(135deg, rgba(16,185,129,.14), rgba(20,30,48,.6)); border-color: rgba(16,185,129,.35); }
+    .result-moyen  { background: linear-gradient(135deg, rgba(245,158,11,.16), rgba(20,30,48,.6)); border-color: rgba(245,158,11,.35); }
+    .result-fort   { background: linear-gradient(135deg, rgba(239,68,68,.18), rgba(20,30,48,.6)); border-color: rgba(239,68,68,.4); }
+
+    .result-label { font-size: .8rem; text-transform: uppercase; letter-spacing: .12em; color: var(--text-dim); font-weight: 700; margin-bottom: .4rem; }
+    .result-value { font-size: 2.6rem; font-weight: 800; color: #f8fafc; margin: 0; line-height: 1; }
+    .result-conf  { font-size: .95rem; color: var(--text-dim); margin-top: .6rem; }
+
+    .badge {
+        display: inline-flex; align-items: center; gap: .4rem;
+        padding: .32rem .85rem; border-radius: 999px;
+        font-size: .78rem; font-weight: 700; letter-spacing: .03em;
+    }
+    .badge-faible { background: rgba(16,185,129,.16); color: #34d399; border: 1px solid rgba(16,185,129,.4); }
+    .badge-moyen  { background: rgba(245,158,11,.16); color: #fbbf24; border: 1px solid rgba(245,158,11,.4); }
+    .badge-fort   { background: rgba(239,68,68,.16);  color: #f87171; border: 1px solid rgba(239,68,68,.4); }
+
+    /* Metric mini-cards */
+    .mini-metric {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-col);
+        border-radius: 12px;
+        padding: 1rem 1.1rem;
+    }
+    .mini-metric .label { font-size: .72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .07em; font-weight: 700; }
+    .mini-metric .value { font-size: 1.5rem; font-weight: 800; color: var(--text-main); margin-top: .15rem; font-family: 'JetBrains Mono', monospace; }
+
+    [data-testid="stMetricValue"] { font-size: 1.7rem; font-weight: 700; color: var(--text-main); }
+    [data-testid="stMetricLabel"] { color: var(--text-dim); font-weight: 600; }
+
+    .stButton > button {
+        background: linear-gradient(120deg, var(--accent), var(--accent-2));
+        color: white; border: none; border-radius: 10px;
+        font-weight: 700; padding: .7rem 1.4rem; letter-spacing: .02em;
+        box-shadow: 0 6px 20px rgba(59,130,246,.25);
+        transition: all .15s ease;
+        width: 100%;
+    }
+    .stButton > button:hover { transform: translateY(-1px); box-shadow: 0 10px 26px rgba(59,130,246,.35); }
+
+    .footer-note { color: var(--text-dim); font-size: .8rem; text-align:center; padding-top: 1.2rem; }
+
+    hr { border-color: var(--border-col); }
+    [data-testid="stExpander"] { background: var(--bg-card); border: 1px solid var(--border-col); border-radius: 12px; }
 </style>
 """, unsafe_allow_html=True)
 
-RANDOM_STATE = 42
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# HELPERS MÉTIER
+# ════════════════════════════════════════════════════════════════════════════
 def region_enc(lat, lon):
     if lat >= 0 and -30 <= lon <= 60: return 0
     if lat >= 0 and lon > 60:         return 1
@@ -54,8 +188,8 @@ def region_enc(lat, lon):
     return 5
 
 REGION_LABELS = {
-    0: "Europe/Afrique", 1: "Asie", 2: "Amérique Nord",
-    3: "Afrique Sud",    4: "Océanie", 5: "Amérique Sud"
+    0: "Europe / Afrique du Nord", 1: "Asie", 2: "Amérique du Nord",
+    3: "Afrique Australe",         4: "Océanie", 5: "Amérique du Sud"
 }
 
 def mag_class(m):
@@ -64,24 +198,21 @@ def mag_class(m):
     return 'Fort'
 
 FEATURES = [
-    'Latitude',
-    'Longitude',
-    'Depth',
-    'Year',
-    'Month',
-    'Day',
-    'Hour',
-    'Type_enc',
-    'Region_enc',
-    'lat_bin',
-    'lon_bin',
-    'distance_center',
-    'depth_ratio',
-    'is_deep'
+    'Latitude', 'Longitude', 'Depth', 'Year', 'Month', 'Day', 'Hour',
+    'Type_enc', 'Region_enc', 'lat_bin', 'lon_bin',
+    'distance_center', 'depth_ratio', 'is_deep'
 ]
 
-# ── Chargement & préparation des données ──────────────────────────────────────
-@st.cache_data(show_spinner="Chargement du dataset…")
+CLASS_META = {
+    'Faible': {'css': 'faible', 'icon': '🟢', 'desc': 'Risque limité — dégâts généralement négligeables.'},
+    'Moyen':  {'css': 'moyen',  'icon': '🟡', 'desc': 'Risque modéré — vigilance recommandée selon la zone.'},
+    'Fort':   {'css': 'fort',   'icon': '🔴', 'desc': 'Risque élevé — impact potentiellement significatif.'},
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# CHARGEMENT & ENTRAÎNEMENT (mis en cache)
+# ════════════════════════════════════════════════════════════════════════════
+@st.cache_data(show_spinner="Chargement du jeu de données…")
 def load_data(path: str):
     df = pd.read_csv(path)
     keep = ['Date', 'Time', 'Latitude', 'Longitude', 'Type', 'Depth', 'Magnitude']
@@ -111,466 +242,268 @@ def load_data(path: str):
 
     le_type = LabelEncoder()
     df['Type_enc'] = le_type.fit_transform(df['Type'].astype(str))
-    df['distance_center'] = np.sqrt(
-    df['Latitude']**2 +
-    df['Longitude']**2
-)
 
-    df['depth_ratio'] = (
-    df['Depth'] /
-    (df['Magnitude'] + 1)
-)
-
-    df['is_deep'] = (
-    df['Depth'] > 300
-).astype(int)
+    df['distance_center'] = np.sqrt(df['Latitude']**2 + df['Longitude']**2)
+    df['depth_ratio']     = df['Depth'] / (df['Magnitude'] + 1)
+    df['is_deep']         = (df['Depth'] > 300).astype(int)
     df['magnitude_class'] = df['Magnitude'].apply(mag_class)
     return df, le_type
 
-@st.cache_resource(show_spinner="Entraînement du modèle XGBoost…")
-def train_model(df):
+@st.cache_resource(show_spinner="Entraînement des modèles…")
+def train_models(df):
     le_y = LabelEncoder()
-    X    = df[FEATURES].fillna(0).values
-    y    = le_y.fit_transform(df['magnitude_class'].values)
-    y_r  = df['Magnitude'].values
+    X   = df[FEATURES].fillna(0).values
+    y   = le_y.fit_transform(df['magnitude_class'].values)
+    y_r = df['Magnitude'].values
 
     X_tr, X_te, y_tr, y_te = train_test_split(
         X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
     )
-    X_tr_r, X_te_r, y_tr_r, y_te_r = train_test_split(
-        X, y_r, test_size=0.2, random_state=RANDOM_STATE
+    X_tr_r, _, y_tr_r, _ = train_test_split(X, y_r, test_size=0.2, random_state=RANDOM_STATE)
+
+    scaler = StandardScaler()
+    scaler.fit(X_tr)
+
+    clf = lgb.LGBMClassifier(
+        n_estimators=1200,
+        num_leaves=63,
+        max_depth=-1,
+        learning_rate=0.03,
+        subsample=0.85,
+        subsample_freq=1,
+        colsample_bytree=0.85,
+        min_child_samples=15,
+        reg_alpha=0.1,
+        reg_lambda=0.1,
+        random_state=RANDOM_STATE, n_jobs=-1, verbose=-1
     )
-    sample_weights = compute_sample_weight(
-    class_weight="balanced",
-    y=y_tr
-)
-    scaler   = StandardScaler()
-    X_tr_s   = scaler.fit_transform(X_tr)
-    X_te_s   = scaler.transform(X_te)
+    clf.fit(X_tr, y_tr)
+    pred = clf.predict(X_te)
 
-    # ── Tous les classifieurs ─────────────────────────────────────────────────
-    classifiers = {
+    metrics = {
+        'Accuracy':  accuracy_score(y_te, pred),
+        'Precision': precision_score(y_te, pred, average='weighted', zero_division=0),
+        'Recall':    recall_score(y_te, pred, average='weighted', zero_division=0),
+        'F1':        f1_score(y_te, pred, average='weighted', zero_division=0),
+    }
 
-    'LogisticRegression': (
-        LogisticRegression(
-            max_iter=1000,
-            class_weight='balanced',
-            random_state=RANDOM_STATE
-        ),
-        True
-    ),
-
-    'RandomForest': (
-        RandomForestClassifier(
-            n_estimators=300,
-            class_weight='balanced',
-            random_state=RANDOM_STATE,
-            n_jobs=-1
-        ),
-        False
-    ),
-
-    'XGBoost': (
-        xgb.XGBClassifier(
-            n_estimators=500,
-            max_depth=7,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            eval_metric='mlogloss',
-            random_state=RANDOM_STATE,
-            n_jobs=-1
-        ),
-        False
-    ),
-
-    'LightGBM': (
-        lgb.LGBMClassifier(
-            n_estimators=400,
-            learning_rate=0.05,
-            random_state=RANDOM_STATE,
-            n_jobs=-1,
-            verbose=-1
-        ),
-        False
+    reg = lgb.LGBMRegressor(
+        n_estimators=900,
+        num_leaves=63,
+        learning_rate=0.03,
+        subsample=0.85,
+        subsample_freq=1,
+        colsample_bytree=0.85,
+        min_child_samples=15,
+        random_state=RANDOM_STATE, n_jobs=-1, verbose=-1
     )
-}
-
-    cls_results, cls_fitted = [], {}
-    for name, (model, scaled) in classifiers.items():
-        Xtr = X_tr_s if scaled else X_tr
-        Xte = X_te_s if scaled else X_te
-        model.fit(Xtr, y_tr)
-        pred = model.predict(Xte)
-        cls_results.append({
-            'Modèle': name,
-            'Accuracy':  round(accuracy_score(y_te, pred), 4),
-            'Precision': round(precision_score(y_te, pred, average='weighted', zero_division=0), 4),
-            'Recall':    round(recall_score(y_te, pred, average='weighted', zero_division=0), 4),
-            'F1':        round(f1_score(y_te, pred, average='weighted', zero_division=0), 4),
-        })
-        cls_fitted[name] = (model, scaled)
-
-    cls_df = pd.DataFrame(cls_results).sort_values('Accuracy', ascending=False).reset_index(drop=True)
-
-    best_name = cls_df.iloc[0]['Modèle']
-    best_model, best_scaled = cls_fitted[best_name]
-    pred_best = best_model.predict(X_te_s if best_scaled else X_te)
-    cm = confusion_matrix(y_te, pred_best)
-
-    # ── Régresseur XGBoost ───────────────────────────────────────────────────
-    reg = xgb.XGBRegressor(n_estimators=300, max_depth=6, learning_rate=0.1,
-                           random_state=RANDOM_STATE, n_jobs=-1)
     reg.fit(X_tr_r, y_tr_r)
-    pred_r = reg.predict(X_te_r)
 
-    reg_metrics = {
-        'MAE':  round(mean_absolute_error(y_te_r, pred_r), 4),
-        'RMSE': round(float(np.sqrt(np.mean((y_te_r - pred_r)**2))), 4),
-        'R2':   round(r2_score(y_te_r, pred_r), 4),
-    }
+    return {'clf': clf, 'reg': reg, 'le_y': le_y, 'scaler': scaler, 'metrics': metrics}
 
-    return {
-        'cls_df':      cls_df,
-        'cls_fitted':  cls_fitted,
-        'best_name':   best_name,
-        'best_model':  best_model,
-        'best_scaled': best_scaled,
-        'cm':          cm,
-        'le_y':        le_y,
-        'scaler':      scaler,
-        'X_te':        X_te,
-        'X_te_s':      X_te_s,
-        'y_te':        y_te,
-        'reg':         reg,
-        'reg_metrics': reg_metrics,
-        'pred_reg':    pred_r,
-        'y_te_r':      y_te_r,
-        'X_te_r':      X_te_r,
-    }
+# ════════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ════════════════════════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown("### 🌐 Seismic AI")
+    st.caption("Module de prédiction sismique")
+    st.markdown("---")
+    data_path = st.text_input("📁 Chemin du dataset (CSV)", value="database.csv")
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-st.sidebar.image(
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f3/Seismograph_output.svg/320px-Seismograph_output.svg.png",
-    width="stretch"
-)
-st.sidebar.title("⚙️ Configuration")
+    if not os.path.exists(data_path):
+        st.error(f"Fichier introuvable : `{data_path}`")
+        st.stop()
 
-data_path = st.sidebar.text_input("Chemin du CSV", value="database.csv")
-if not os.path.exists(data_path):
-    st.sidebar.error(f"Fichier introuvable : {data_path}")
-    st.stop()
-
-df, le_type = load_data(data_path)
-results     = train_model(df)
-
-page = st.sidebar.radio(
-    "Navigation",
-    ["📊 Exploration", "🗺️ Carte mondiale", "🤖 Modèles ML", "🔍 Prédiction", "📈 Régression"]
-)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown(f"**Séismes** : {len(df):,}")
-st.sidebar.markdown(f"**Période** : {df['Year'].min()} – {df['Year'].max()}")
-st.sidebar.markdown(f"**Best model** : `{results['best_name']}`")
-best_acc = results['cls_df'].iloc[0]['Accuracy']
-st.sidebar.markdown(f"**Accuracy** : `{best_acc*100:.1f} %`")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 1 — Exploration
-# ══════════════════════════════════════════════════════════════════════════════
-if page == "📊 Exploration":
-    st.title("🌍 Analyse Exploratoire des Séismes")
-    st.caption("Dataset USGS Earthquake Database (Kaggle) — 1965-2016")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total séismes", f"{len(df):,}")
-    c2.metric("Magnitude max", f"{df['Magnitude'].max():.1f}")
-    c3.metric("Profondeur max", f"{df['Depth'].max():.0f} km")
-    c4.metric("Types uniques", df['Type'].nunique())
+    df, le_type = load_data(data_path)
+    models = train_models(df)
 
     st.markdown("---")
-
-    # Distribution des magnitudes
-    col1, col2 = st.columns(2)
-    with col1:
-        fig = px.histogram(
-            df, x='Magnitude', nbins=60, color='magnitude_class',
-            color_discrete_map={'Faible': '#2196F3', 'Moyen': '#FF9800', 'Fort': '#F44336'},
-            title="Distribution des magnitudes par classe",
-            labels={'magnitude_class': 'Classe'}
-        )
-        fig.update_layout(bargap=0.05)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        depth_bins = pd.cut(df['Depth'], bins=[0,70,300,800], labels=['Superficiel','Intermédiaire','Profond'])
-        fig = px.pie(
-            values=depth_bins.value_counts().values,
-            names=depth_bins.value_counts().index,
-            title="Répartition par profondeur",
-            color_discrete_sequence=px.colors.sequential.Viridis
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Évolution temporelle
-    yearly = df.groupby('Year').agg(
-        count=('Magnitude', 'count'),
-        mag_mean=('Magnitude', 'mean')
-    ).reset_index()
-
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Bar(x=yearly['Year'], y=yearly['count'], name="Nombre", marker_color='#457b9d'), secondary_y=False)
-    fig.add_trace(go.Scatter(x=yearly['Year'], y=yearly['mag_mean'], name="Mag. moy.", line=dict(color='#e63946', width=2)), secondary_y=True)
-    fig.update_layout(title="Évolution annuelle des séismes (1965–2016)", xaxis_title="Année")
-    fig.update_yaxes(title_text="Nombre de séismes", secondary_y=False)
-    fig.update_yaxes(title_text="Magnitude moyenne", secondary_y=True)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Par région
-    col3, col4 = st.columns(2)
-    with col3:
-        reg_counts = df['Region'].value_counts().reset_index()
-        reg_counts.columns = ['Region', 'count']
-        fig = px.bar(reg_counts, x='Region', y='count', color='Region',
-                     title="Séismes par région", color_discrete_sequence=px.colors.qualitative.Bold)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col4:
-        fig = px.box(df, x='magnitude_class', y='Depth',
-                     color='magnitude_class',
-                     color_discrete_map={'Faible': '#2196F3', 'Moyen': '#FF9800', 'Fort': '#F44336'},
-                     title="Profondeur vs Classe de magnitude",
-                     category_orders={'magnitude_class': ['Faible', 'Moyen', 'Fort']})
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Heatmap mois x heure
-    pivot = df.pivot_table(values='Magnitude', index='Month', columns='Hour', aggfunc='count', fill_value=0)
-    fig = px.imshow(pivot, color_continuous_scale='YlOrRd',
-                    title="Fréquence des séismes par Mois × Heure (UTC)",
-                    labels=dict(color="Nombre", x="Heure", y="Mois"))
-    st.plotly_chart(fig, use_container_width=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 2 — Carte mondiale
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "🗺️ Carte mondiale":
-    st.title("🗺️ Carte mondiale des séismes")
-
-    col1, col2, col3 = st.columns(3)
-    mag_min  = col1.slider("Magnitude minimale", 0.0, 9.5, 5.0, 0.1)
-    year_rng = col2.slider("Période", int(df['Year'].min()), int(df['Year'].max()),
-                           (int(df['Year'].min()), int(df['Year'].max())))
-    n_pts    = col3.slider("Points max (carte)", 1000, 10000, 5000, 500)
-
-    subset = df[
-        (df['Magnitude'] >= mag_min) &
-        (df['Year'] >= year_rng[0]) &
-        (df['Year'] <= year_rng[1])
-    ].sample(min(n_pts, len(df[(df['Magnitude']>=mag_min)])), random_state=42)
-
-    st.caption(f"{len(subset):,} événements affichés")
-
-    fig = px.scatter_geo(
-        subset, lat='Latitude', lon='Longitude',
-        color='Magnitude', size='Magnitude',
-        hover_name='Type',
-        hover_data={'Year': True, 'Depth': True, 'magnitude_class': True, 'Latitude': False, 'Longitude': False},
-        projection='natural earth',
-        color_continuous_scale='Inferno',
-        title=f"Séismes ≥ {mag_min} ({year_rng[0]}–{year_rng[1]})"
-    )
-    fig.update_layout(height=600)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Densité
-    fig2 = px.density_mapbox(
-        subset, lat='Latitude', lon='Longitude', z='Magnitude',
-        radius=6, center=dict(lat=0, lon=0), zoom=0,
-        mapbox_style='open-street-map',
-        color_continuous_scale='YlOrRd',
-        title="Densité géographique"
-    )
-    fig2.update_layout(height=500)
-    st.plotly_chart(fig2, use_container_width=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 3 — Modèles ML
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "🤖 Modèles ML":
-    st.title("🤖 Comparaison des modèles ML")
-
-    # KPIs du meilleur modèle
-    best_row = results['cls_df'].iloc[0]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("🏆 Meilleur modèle", best_row['Modèle'])
-    c2.metric("✅ Accuracy", f"{best_row['Accuracy']*100:.1f} %")
-    c3.metric("📐 F1 (weighted)", f"{best_row['F1']:.4f}")
-    c4.metric("🎯 Precision", f"{best_row['Precision']:.4f}")
-
+    st.markdown("**📊 État du modèle**")
+    st.markdown(f"<div class='mini-metric'><div class='label'>Accuracy</div><div class='value'>{models['metrics']['Accuracy']*100:.1f}%</div></div>", unsafe_allow_html=True)
+    st.write("")
+    st.markdown(f"<div class='mini-metric'><div class='label'>F1-score</div><div class='value'>{models['metrics']['F1']:.3f}</div></div>", unsafe_allow_html=True)
     st.markdown("---")
+    st.caption(f"Entraîné sur {len(df):,} séismes\n\n{df['Year'].min()} – {df['Year'].max()}")
+    st.caption("Modèle : LightGBM Classifier + Regressor")
 
-    # Tableau comparatif
-    st.subheader("Tableau comparatif")
-    styled = results['cls_df'].style.highlight_max(
-        subset=['Accuracy', 'F1'], color='#d4edda'
-    ).format({'Accuracy': '{:.2%}', 'Precision': '{:.2%}', 'Recall': '{:.2%}', 'F1': '{:.4f}'})
-    st.dataframe(styled, use_container_width=True)
+# ════════════════════════════════════════════════════════════════════════════
+# HERO HEADER
+# ════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<div class="hero">
+    <div class="hero-eyebrow">SEISMIC AI · MODULE DE PRÉDICTION</div>
+    <p class="hero-title">🔍 Prédiction d'Événement Sismique</p>
+    <p class="hero-sub">Renseignez les paramètres géophysiques d'un événement pour estimer sa classe de magnitude
+    et sa valeur précise, à partir d'un modèle LightGBM entraîné sur les données USGS (1965–2016).</p>
+</div>
+""", unsafe_allow_html=True)
 
-    # Graphique comparatif
-    fig = px.bar(
-        results['cls_df'].melt(id_vars='Modèle', var_name='Métrique', value_name='Score'),
-        x='Modèle', y='Score', color='Métrique', barmode='group',
-        title="Comparaison des métriques par modèle",
-        color_discrete_sequence=px.colors.qualitative.Safe
-    )
-    st.plotly_chart(fig, use_container_width=True)
+# ════════════════════════════════════════════════════════════════════════════
+# FORMULAIRE DE SAISIE
+# ════════════════════════════════════════════════════════════════════════════
+left, right = st.columns([1.05, 1.55], gap="large")
 
-    # Matrice de confusion
-    st.subheader(f"Matrice de confusion — {results['best_name']}")
-    le_y = results['le_y']
-    cm   = results['cm']
-    fig_cm = px.imshow(
-        cm,
-        text_auto=True,
-        x=le_y.classes_, y=le_y.classes_,
-        color_continuous_scale='Blues',
-        labels=dict(x="Prédite", y="Réelle", color="Nb"),
-        title=f"Confusion Matrix — {results['best_name']}"
-    )
-    st.plotly_chart(fig_cm, use_container_width=True)
+with left:
+    st.markdown('<div class="panel"><div class="panel-title"><span class="bar"></span>Paramètres de l\'événement</div>', unsafe_allow_html=True)
 
-    # Feature importance
-    best_model = results['best_model']
-    if hasattr(best_model, 'feature_importances_'):
-        st.subheader("Importance des variables")
-        imp = pd.Series(best_model.feature_importances_, index=FEATURES).sort_values(ascending=True)
-        fig_imp = px.bar(imp, orientation='h', title="Feature Importance",
-                         color=imp.values, color_continuous_scale='Teal',
-                         labels={'value': 'Importance', 'index': 'Variable'})
-        st.plotly_chart(fig_imp, use_container_width=True)
+    st.markdown("**🌍 Localisation**")
+    lat = st.slider("Latitude", -90.0, 90.0, 35.0, 0.1)
+    lon = st.slider("Longitude", -180.0, 180.0, 139.0, 0.1)
+    depth = st.slider("Profondeur (km)", 0.0, 800.0, 50.0, 1.0)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 4 — Prédiction interactive
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "🔍 Prédiction":
-    st.title("🔍 Prédiction interactive")
-    st.markdown("Entrez les paramètres d'un séisme potentiel pour prédire sa classe de magnitude.")
+    st.markdown("**🕒 Date & heure**")
+    c1, c2 = st.columns(2)
+    with c1:
+        year = st.number_input("Année", 1965, 2035, 2026)
+        day  = st.number_input("Jour", 1, 31, 15)
+    with c2:
+        month = st.number_input("Mois", 1, 12, 6)
+        hour  = st.number_input("Heure (UTC)", 0, 23, 12)
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        lat    = st.number_input("Latitude", -90.0, 90.0, 35.0, 0.1)
-        lon    = st.number_input("Longitude", -180.0, 180.0, 139.0, 0.1)
-        depth  = st.number_input("Profondeur (km)", 0.0, 800.0, 50.0, 1.0)
-    with col2:
-        year   = st.number_input("Année", 1965, 2030, 2024)
-        month  = st.slider("Mois", 1, 12, 6)
-        day    = st.slider("Jour", 1, 31, 15)
-        hour   = st.slider("Heure (UTC)", 0, 23, 12)
-    with col3:
-        stype  = st.selectbox("Type", ['Earthquake', 'Nuclear Explosion', 'Explosion', 'Rock Burst'])
+    st.markdown("**⚙️ Type d'événement**")
+    stype = st.selectbox("Type", ['Earthquake', 'Nuclear Explosion', 'Explosion', 'Rock Burst'], label_visibility="collapsed")
 
-    le_y      = results['le_y']
-    best_model = results['best_model']
-    scaler    = results['scaler']
-    le_type_enc = LabelEncoder()
-    le_type_enc.classes_ = np.array(['Earthquake', 'Explosion', 'Nuclear Explosion', 'Rock Burst'])
+    st.markdown("<br>", unsafe_allow_html=True)
+    predict_btn = st.button("🚀  Lancer la prédiction", type="primary")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    try:
-        type_enc_val = list(le_type_enc.classes_).index(stype)
-    except ValueError:
-        type_enc_val = 0
+    region_name = REGION_LABELS.get(region_enc(lat, lon), "—")
+    st.markdown(f"""
+    <div class="panel" style="padding-top:1.1rem; padding-bottom:1.1rem;">
+        <div class="panel-title" style="margin-bottom:.6rem;"><span class="bar"></span>Contexte géographique</div>
+        <span style="color:var(--text-dim); font-size:.9rem;">Région détectée : </span>
+        <span class="badge badge-moyen">{region_name}</span>
+    </div>
+    """, unsafe_allow_html=True)
 
-    reg_val = region_enc(lat, lon)
-    lat_b   = min(17, max(0, int((lat + 90) / 180 * 18)))
-    lon_b   = min(35, max(0, int((lon + 180) / 360 * 36)))
+# ════════════════════════════════════════════════════════════════════════════
+# PRÉPARATION DES FEATURES & PRÉDICTION
+# ════════════════════════════════════════════════════════════════════════════
+le_type_enc = LabelEncoder()
+le_type_enc.classes_ = np.array(['Earthquake', 'Explosion', 'Nuclear Explosion', 'Rock Burst'])
+try:
+    type_enc_val = list(le_type_enc.classes_).index(stype)
+except ValueError:
+    type_enc_val = 0
 
-    X_pred = np.array([[lat, lon, depth, year, month, day, hour,
-                        type_enc_val, reg_val, lat_b, lon_b]])
+reg_val = region_enc(lat, lon)
+lat_b = min(17, max(0, int((lat + 90) / 180 * 18)))
+lon_b = min(35, max(0, int((lon + 180) / 360 * 36)))
+distance_center = float(np.sqrt(lat**2 + lon**2))
 
-    if results['best_scaled']:
-        X_pred_use = scaler.transform(X_pred)
-    else:
-        X_pred_use = X_pred
+with right:
+    if not predict_btn and 'last_pred' not in st.session_state:
+        st.markdown("""
+        <div class="panel" style="text-align:center; padding: 4rem 2rem;">
+            <div style="font-size:2.6rem; margin-bottom:.6rem;">🛰️</div>
+            <div style="color:var(--text-main); font-weight:700; font-size:1.15rem; margin-bottom:.4rem;">
+                En attente de paramètres
+            </div>
+            <div style="color:var(--text-dim); font-size:.92rem;">
+                Renseignez les champs à gauche puis cliquez sur <b>« Lancer la prédiction »</b>
+                pour obtenir une estimation de magnitude.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    if st.button("🚀 Prédire", type="primary"):
-        pred_cls   = best_model.predict(X_pred_use)[0]
+    if predict_btn:
+        depth_ratio_est = depth / 6.0  # estimation neutre avant connaissance de la magnitude
+        is_deep = 1 if depth > 300 else 0
+
+        X_pred = np.array([[lat, lon, depth, year, month, day, hour,
+                             type_enc_val, reg_val, lat_b, lon_b,
+                             distance_center, depth_ratio_est, is_deep]])
+
+        clf, reg, le_y, scaler = models['clf'], models['reg'], models['le_y'], models['scaler']
+
+        pred_cls   = clf.predict(X_pred)[0]
         pred_label = le_y.inverse_transform([pred_cls])[0]
+        proba      = clf.predict_proba(X_pred)[0]
+        confidence = float(np.max(proba))
 
-        if hasattr(best_model, 'predict_proba'):
-            proba = best_model.predict_proba(X_pred_use)[0]
-        else:
-            proba = None
+        pred_mag = float(reg.predict(X_pred)[0])
 
-        color_map = {'Faible': '🟢', 'Moyen': '🟡', 'Fort': '🔴'}
-        st.markdown(f"## Résultat : {color_map.get(pred_label, '')} **{pred_label}**")
+        st.session_state['last_pred'] = {
+            'label': pred_label, 'proba': proba, 'classes': le_y.classes_,
+            'confidence': confidence, 'mag': pred_mag,
+            'lat': lat, 'lon': lon, 'depth': depth, 'stype': stype
+        }
 
-        if proba is not None:
-            st.subheader("Probabilités par classe")
-            prob_df = pd.DataFrame({
-                'Classe': le_y.classes_,
-                'Probabilité': proba
-            })
-            fig = px.bar(prob_df, x='Classe', y='Probabilité',
-                         color='Classe',
-                         color_discrete_map={'Faible': '#2196F3', 'Moyen': '#FF9800', 'Fort': '#F44336'},
-                         range_y=[0, 1], title="Distribution des probabilités")
-            fig.add_hline(y=0.5, line_dash='dash', line_color='gray')
-            st.plotly_chart(fig, use_container_width=True)
+    if 'last_pred' in st.session_state:
+        res = st.session_state['last_pred']
+        meta = CLASS_META[res['label']]
 
-        # Contexte géographique
-        st.subheader("Localisation")
-        fig_map = px.scatter_geo(
-            pd.DataFrame({'lat': [lat], 'lon': [lon], 'label': ['Événement prédit']}),
-            lat='lat', lon='lon', text='label',
-            projection='natural earth', size_max=20
+        st.markdown(f"""
+        <div class="result-card result-{meta['css']}">
+            <div class="result-label">Classe de magnitude prédite</div>
+            <p class="result-value">{meta['icon']} {res['label']}</p>
+            <div class="result-conf">{meta['desc']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Magnitude estimée", f"{res['mag']:.2f}")
+        m2.metric("Confiance du modèle", f"{res['confidence']*100:.1f} %")
+        m3.metric("Profondeur saisie", f"{res['depth']:.0f} km")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Probabilités par classe
+        st.markdown('<div class="panel"><div class="panel-title"><span class="bar"></span>Distribution des probabilités</div>', unsafe_allow_html=True)
+        prob_df = pd.DataFrame({'Classe': res['classes'], 'Probabilité': res['proba']})
+        color_map = {'Faible': '#10b981', 'Moyen': '#f59e0b', 'Fort': '#ef4444'}
+        fig = px.bar(
+            prob_df, x='Probabilité', y='Classe', orientation='h',
+            color='Classe', color_discrete_map=color_map, text='Probabilité'
         )
-        fig_map.update_traces(marker=dict(size=15, color='red', symbol='star'))
+        fig.update_traces(texttemplate='%{text:.1%}', textposition='outside')
+        fig.update_layout(
+            showlegend=False, height=240,
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+            font_color='#e5e9f0', xaxis=dict(range=[0,1], gridcolor='#232c42', tickformat='.0%'),
+            yaxis=dict(gridcolor='#232c42'), margin=dict(l=0, r=20, t=10, b=10)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Jauge de confiance
+        st.markdown('<div class="panel"><div class="panel-title"><span class="bar"></span>Niveau de confiance</div>', unsafe_allow_html=True)
+        gauge = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=res['confidence']*100,
+            number={'suffix': '%', 'font': {'color': '#e5e9f0', 'size': 36}},
+            gauge={
+                'axis': {'range': [0, 100], 'tickcolor': '#8b97ad'},
+                'bar': {'color': '#3b82f6'},
+                'bgcolor': '#161e30',
+                'borderwidth': 0,
+                'steps': [
+                    {'range': [0, 50], 'color': '#1f2940'},
+                    {'range': [50, 80], 'color': '#243150'},
+                    {'range': [80, 100], 'color': '#2c3c63'},
+                ],
+            }
+        ))
+        gauge.update_layout(height=220, margin=dict(l=20, r=20, t=10, b=10),
+                            paper_bgcolor='rgba(0,0,0,0)', font_color='#e5e9f0')
+        st.plotly_chart(gauge, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Carte de localisation
+        st.markdown('<div class="panel"><div class="panel-title"><span class="bar"></span>Localisation de l\'événement</div>', unsafe_allow_html=True)
+        fig_map = px.scatter_geo(
+            pd.DataFrame({'lat': [res['lat']], 'lon': [res['lon']], 'label': [f"{res['stype']} · {res['mag']:.2f}"]}),
+            lat='lat', lon='lon', text='label', projection='natural earth'
+        )
+        fig_map.update_traces(marker=dict(size=16, color=color_map[res['label']], symbol='circle',
+                                          line=dict(width=2, color='white')))
+        fig_map.update_geos(
+            bgcolor='rgba(0,0,0,0)', landcolor='#1c2538', oceancolor='#0b0f19',
+            showocean=True, lakecolor='#0b0f19', showcountries=True, countrycolor='#2a344c'
+        )
+        fig_map.update_layout(height=380, margin=dict(l=0, r=0, t=10, b=0),
+                              paper_bgcolor='rgba(0,0,0,0)', font_color='#e5e9f0')
         st.plotly_chart(fig_map, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE 5 — Régression
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "📈 Régression":
-    st.title("📈 Régression — Prédiction de la Magnitude")
-
-    m = results['reg_metrics']
-    c1, c2, c3 = st.columns(3)
-    c1.metric("MAE", f"{m['MAE']:.4f}")
-    c2.metric("RMSE", f"{m['RMSE']:.4f}")
-    c3.metric("R²", f"{m['R2']:.4f}")
-
-    st.markdown("---")
-
-    # Valeurs réelles vs prédites
-    n_show = min(1000, len(results['y_te_r']))
-    idx    = np.random.choice(len(results['y_te_r']), n_show, replace=False)
-    fig = px.scatter(
-        x=results['y_te_r'][idx], y=results['pred_reg'][idx],
-        labels={'x': 'Magnitude réelle', 'y': 'Magnitude prédite'},
-        title=f"Réel vs Prédit (XGBoost Regressor, n={n_show})",
-        opacity=0.5, color_discrete_sequence=['#457b9d']
-    )
-    fig.add_shape(type='line',
-                  x0=results['y_te_r'].min(), y0=results['y_te_r'].min(),
-                  x1=results['y_te_r'].max(), y1=results['y_te_r'].max(),
-                  line=dict(color='red', dash='dash'))
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Distribution des résidus
-    residuals = results['y_te_r'][idx] - results['pred_reg'][idx]
-    fig_res = px.histogram(residuals, nbins=50, title="Distribution des résidus",
-                           labels={'value': 'Résidu', 'count': 'Fréquence'},
-                           color_discrete_sequence=['#e63946'])
-    fig_res.add_vline(x=0, line_dash='dash', line_color='black')
-    st.plotly_chart(fig_res, use_container_width=True)
-
-    # Feature importance régression
-    reg = results['reg']
-    if hasattr(reg, 'feature_importances_'):
-        imp = pd.Series(reg.feature_importances_, index=FEATURES).sort_values(ascending=True)
-        fig_imp = px.bar(imp, orientation='h',
-                         title="Feature Importance — Régresseur",
-                         color=imp.values, color_continuous_scale='Magma',
-                         labels={'value': 'Importance', 'index': 'Variable'})
-        st.plotly_chart(fig_imp, use_container_width=True)
+st.markdown('<div class="footer-note">Seismic AI · Modèle LightGBM entraîné sur USGS Earthquake Database (1965–2016) · Usage indicatif uniquement, ne remplace pas une alerte officielle.</div>', unsafe_allow_html=True)

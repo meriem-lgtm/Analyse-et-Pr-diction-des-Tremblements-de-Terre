@@ -1,3 +1,7 @@
+"""
+Earthquake ML Pipeline — VERSION CORRIGÉE & ROBUSTE
+Fix imbalance + features + training propre
+"""
 
 import os
 import warnings
